@@ -1,116 +1,32 @@
-"""
-qa_generator.py
----------------
-RAG pipeline: takes retrieved context chunks + user question,
-sends them to Google Gemini API, and returns a grounded answer with citations.
+import google.generativeai as genai
 
-Requires environment variable:
-    GOOGLE_API_KEY=your_key_here
-"""
+genai.configure(api_key=API_KEY)
 
-import os
-from typing import List, Dict, Any
-from dotenv import load_dotenv
+MODEL = genai.GenerativeModel("gemini-1.5-flash")
 
-load_dotenv()
+def generate_answer(question, context_chunks):
 
-from google import genai                  # pip install google-genai
-from google.genai import types
-
-# ── Setup ────────────────────────────────────────────────────────────────────
-API_KEY = os.getenv("GOOGLE_API_KEY", "")
-if not API_KEY:
-    raise EnvironmentError(
-        "GOOGLE_API_KEY environment variable is not set.\n"
-        "Get a free key at https://aistudio.google.com/app/apikey"
-    )
-
-_client = genai.Client(api_key=API_KEY)
-MODEL   = "gemini-2.0-flash-lite"    # latest stable free-tier model
-
-
-# ── Prompt builder ────────────────────────────────────────────────────────────
-
-def _build_prompt(question: str, context_chunks: List[Dict[str, Any]]) -> str:
-    """
-    Construct a RAG prompt that instructs Gemini to answer ONLY from context.
-
-    Args:
-        question:       User's question.
-        context_chunks: Retrieved chunks with "text" and "source" fields.
-
-    Returns:
-        Full prompt string.
-    """
-    context_text = ""
-    for i, chunk in enumerate(context_chunks, start=1):
-        source = chunk.get("source", "unknown")
-        text   = chunk.get("text", "")
-        context_text += f"\n--- Chunk {i} (Source: {source}) ---\n{text}\n"
-
-    prompt = f"""You are Bharat Sahayak AI, a helpful assistant for Indian citizens seeking 
-information about government welfare schemes.
-
-Answer the user's question using ONLY the context provided below.
-If the answer is not in the context, say "I don't have enough information about this in my database."
-Always mention which scheme/document your answer comes from.
-Keep the answer concise, clear, and in simple language.
-
-CONTEXT:
-{context_text}
-
-USER QUESTION:
-{question}
-
-ANSWER:"""
-    return prompt
-
-
-# ── Generation ────────────────────────────────────────────────────────────────
-
-def generate_answer(
-    question: str,
-    context_chunks: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Generate a grounded answer using Gemini + retrieved context.
-
-    Args:
-        question:       User's natural language question.
-        context_chunks: Top-k retrieved chunks from the vector store.
-
-    Returns:
-        {
-            "answer":  str,               # generated answer text
-            "sources": List[str],         # unique PDF filenames cited
-            "chunks":  List[Dict],        # the chunks that were used
-        }
-    """
     if not context_chunks:
         return {
-            "answer":  "No relevant scheme information found for your query.",
+            "answer": "No relevant scheme information found for your query.",
             "sources": [],
-            "chunks":  [],
+            "chunks": [],
         }
 
     prompt = _build_prompt(question, context_chunks)
 
     try:
-        response = _client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-        )
+        response = MODEL.generate_content(prompt)
         answer_text = response.text.strip()
     except Exception as e:
         answer_text = f"[Error calling Gemini API: {e}]"
 
-    # Collect unique source filenames
     sources = list(dict.fromkeys(
         chunk.get("source", "unknown") for chunk in context_chunks
     ))
 
     return {
-        "answer":  answer_text,
+        "answer": answer_text,
         "sources": sources,
-        "chunks":  context_chunks,
+        "chunks": context_chunks,
     }

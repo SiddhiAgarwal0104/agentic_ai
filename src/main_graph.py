@@ -1,102 +1,114 @@
-from typing import TypedDict, Dict, List, Optional
+from typing import TypedDict, Dict, List
 from langgraph.graph import StateGraph, START, END
+
+from speech_to_text import record_audio, transcribe_audio
+from text_to_speech import speak_text
+from monitoring_agent import predict_resolution, recommend_escalation 
 
 from preprocess import preprocessing_node
 from loader import predict_intent, load_intent_model
 from extractor import extract_entities
+
 from rag_agent import recommend_schemes, initialise as init_rag_agent
 
-
-# ── State ─────────────────────────────────────────────────────────────────────
+# ── State ─────────────────────────────────────────────
 class AgentState(TypedDict):
-    # Member 1 fields (unchanged)
-    user_input:       str
-    clean_text:       str
+    user_input: str
+    clean_text: str
     structured_issue: Dict
+    user_info: Dict
+    recommended_schemes: List[str]
+    answer: str
+    expected_resolution_time: float
+    escalation_status: str
 
-    # Member 2 fields (RAG Agent)
-    user_info:              Dict          # age, income, state — passed in at runtime
-    recommended_schemes:    List[str]     # eligible scheme categories
-    answer:                 str           # Gemini-generated grounded answer
-    sources:                List[str]     # PDF filenames used as context
-
-
-# ── One-time startup ──────────────────────────────────────────────────────────
+# ── Startup ───────────────────────────────────────────
 tokenizer, model = load_intent_model()
-init_rag_agent()   # builds FAISS index + loads eligibility model (runs once)
+init_rag_agent()
 
-
-# ── Nodes ─────────────────────────────────────────────────────────────────────
+# ── Nodes ─────────────────────────────────────────────
 
 def intent_node(state: AgentState) -> Dict:
-    """Member 1 — preprocess + intent classification."""
-    cleaned    = preprocessing_node(state["user_input"])
+    cleaned = preprocessing_node(state["user_input"])
     prediction = predict_intent(cleaned, tokenizer, model)
     return {
-        "clean_text":       cleaned,
+        "clean_text": cleaned,
         "structured_issue": prediction,
     }
 
-
 def ner_node(state: AgentState) -> Dict:
-    """Member 1 — named entity recognition."""
-    entities  = extract_entities(state["clean_text"])
-    new_issue = state["structured_issue"].copy()
-    new_issue["entities"] = entities
-    return {"structured_issue": new_issue}
-
+    entities = extract_entities(state["clean_text"])
+    issue = state["structured_issue"].copy()
+    issue["entities"] = entities
+    return {"structured_issue": issue}
 
 def rag_node(state: AgentState) -> Dict:
-    """
-    Member 2 — Scheme Recommendation & RAG Agent.
-
-    Uses:
-      - state["clean_text"]  as the search query
-      - state["user_info"]   for eligibility checking (age, income, state)
-
-    Writes:
-      - recommended_schemes, answer, sources
-    """
-    query     = state.get("clean_text", state["user_input"])
-    user_info = state.get("user_info", {"age": 30, "income": 300_000, "state": "other"})
-
+    query = state.get("clean_text", state["user_input"])
+    user_info = state["user_info"]
     result = recommend_schemes(query=query, user_info=user_info)
-
     return {
         "recommended_schemes": result["recommended_schemes"],
-        "answer":              result["answer"],
-        "sources":             result["sources"],
+        "answer": result["answer"],
+        "sources": result["sources"],
     }
 
+def monitoring_node(state: AgentState) -> Dict:
+    intent = state["structured_issue"].get("intent", "general")
+    urgency = state["structured_issue"].get("urgency", "low")
+    
+    res_time = predict_resolution(intent, urgency)
+    status = recommend_escalation(intent, urgency)
+    
+    return {
+        "expected_resolution_time": res_time,
+        "escalation_status": status
+    }
 
-# ── Graph ─────────────────────────────────────────────────────────────────────
+# ── Graph ─────────────────────────────────────────────
 
 builder = StateGraph(AgentState)
 
-builder.add_node("classifier", intent_node)   # Member 1
-builder.add_node("extractor",  ner_node)       # Member 1
-builder.add_node("rag",        rag_node)       # Member 2
+# Add all 4 nodes
+builder.add_node("classifier", intent_node)
+builder.add_node("extractor", ner_node)
+builder.add_node("rag", rag_node)
+builder.add_node("monitor", monitoring_node) # Monitoring
 
-builder.add_edge(START,        "classifier")
+builder.add_edge(START, "classifier")
 builder.add_edge("classifier", "extractor")
-builder.add_edge("extractor",  "rag")          # RAG runs after NER
-builder.add_edge("rag",        END)
+builder.add_edge("extractor", "rag")    # Link Member 1 to Member 2
+builder.add_edge("rag", "monitor")      # Link Member 2 to Member 4
+builder.add_edge("monitor", END)        # Final step
 
 bharat_sahayak = builder.compile()
 
-
-# ── Run ───────────────────────────────────────────────────────────────────────
+# ── Run System ─────────────────────────────────────────
 
 if __name__ == "__main__":
+
+    # 🎤 Step 1: Record Audio 
+    print("Listening... speak now.")
+    audio_file = record_audio()
+
+    # 🧠 Step 2: Speech → Text 
+    user_query = transcribe_audio(audio_file)
+    print("\nUser said:", user_query)
+
+    # Initialize data
     input_data = {
-        "user_input": "Mera naam Tanya hai aur main Kanpur se hoon, mera ration card nahi mila.",
-        "user_info":  {"age": 34, "income": 120_000, "state": "uttar pradesh"},
+        "user_input": user_query,
+        "user_info": {"age": 34, "income": 120000, "state": "uttar pradesh"},
     }
 
+    # 🤖 Step 3: Run AI Agents (The Graph)
     final_state = bharat_sahayak.invoke(input_data)
 
     print("\n===== Bharat Sahayak AI — Final State =====")
-    print(f"Structured Issue    : {final_state['structured_issue']}")
-    print(f"Recommended Schemes : {final_state['recommended_schemes']}")
-    print(f"Answer              : {final_state['answer']}")
-    print(f"Sources             : {final_state['sources']}")
+    print("Intent:", final_state["structured_issue"].get("intent"))
+    print("Resolution Time:", final_state["expected_resolution_time"], "hours")
+    print("Escalation:", final_state["escalation_status"])
+    print("Answer:", final_state["answer"])
+
+    # 🔊 Step 4: Speak the Answer
+    final_voice_output = f"{final_state['answer']}. Your case status is: {final_state['escalation_status']}."
+    speak_text(final_voice_output)
