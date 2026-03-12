@@ -35,7 +35,7 @@ faiss-cpu>=1.7.4          # use faiss-gpu if CUDA is available
 pypdf>=4.0.0
 
 # Google Gemini
-google-generativeai>=0.5.0
+google-genai>=0.3.0
 
 # ML / eligibility checker
 scikit-learn>=1.4.0

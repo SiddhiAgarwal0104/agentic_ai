@@ -14,8 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from google import genai                  # pip install google-genai
-from google.genai import types
+from google import genai
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 API_KEY = os.getenv("GOOGLE_API_KEY", "")
@@ -26,7 +25,7 @@ if not API_KEY:
     )
 
 _client = genai.Client(api_key=API_KEY)
-MODEL   = "gemini-2.0-flash-lite"    # latest stable free-tier model
+MODEL = "gemini-2.5-flash"   # latest stable free-tier model
 
 
 # ── Prompt builder ────────────────────────────────────────────────────────────
@@ -68,49 +67,46 @@ ANSWER:"""
 
 # ── Generation ────────────────────────────────────────────────────────────────
 
-def generate_answer(
-    question: str,
-    context_chunks: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """
-    Generate a grounded answer using Gemini + retrieved context.
+import time
 
-    Args:
-        question:       User's natural language question.
-        context_chunks: Top-k retrieved chunks from the vector store.
+def generate_answer(question: str, context_chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
 
-    Returns:
-        {
-            "answer":  str,               # generated answer text
-            "sources": List[str],         # unique PDF filenames cited
-            "chunks":  List[Dict],        # the chunks that were used
-        }
-    """
     if not context_chunks:
         return {
-            "answer":  "No relevant scheme information found for your query.",
+            "answer": "No relevant scheme information found for your query.",
             "sources": [],
-            "chunks":  [],
+            "chunks": [],
         }
 
     prompt = _build_prompt(question, context_chunks)
 
-    try:
-        response = _client.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-        )
-        answer_text = response.text.strip()
-    except Exception as e:
-        answer_text = f"[Error calling Gemini API: {e}]"
+    retries = 3
+    for attempt in range(retries):
+        try:
+            response = _client.models.generate_content(
+                model=MODEL,
+                contents=prompt,
+                config={
+                    "temperature": 0.2
+                }
+            )
 
-    # Collect unique source filenames
+            answer_text = response.text.strip() if response.text else ""
+            break
+
+        except Exception as e:
+
+            if attempt < retries - 1:
+                time.sleep(5)
+            else:
+                answer_text = f"[Gemini API Error: {e}]"
+
     sources = list(dict.fromkeys(
         chunk.get("source", "unknown") for chunk in context_chunks
     ))
 
     return {
-        "answer":  answer_text,
+        "answer": answer_text,
         "sources": sources,
-        "chunks":  context_chunks,
+        "chunks": context_chunks,
     }
